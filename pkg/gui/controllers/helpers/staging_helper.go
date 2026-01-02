@@ -2,6 +2,7 @@ package helpers
 
 import (
 	"github.com/jesseduffield/lazygit/pkg/commands/models"
+	"github.com/jesseduffield/lazygit/pkg/gui/context"
 	"github.com/jesseduffield/lazygit/pkg/gui/patch_exploring"
 	"github.com/jesseduffield/lazygit/pkg/gui/types"
 )
@@ -56,6 +57,20 @@ func (self *StagingHelper) RefreshStagingPanel(focusOpts types.OnFocusOpts) {
 	mainDiff := self.c.Git().WorkingTree.WorktreeFileDiff(file, true, false)
 	secondaryDiff := self.c.Git().WorkingTree.WorktreeFileDiff(file, true, true)
 
+	// Check if pager is enabled for staging view
+	pagerConfig := self.c.State().GetPagerConfig()
+	usePager := pagerConfig.StagingPagerEnabled()
+
+	var mainPagerOutput, secondaryPagerOutput string
+	if usePager {
+		width := mainContext.GetView().InnerWidth()
+		pagerCmd := pagerConfig.GetPagerCommand(width)
+		if pagerCmd != "" {
+			mainPagerOutput = self.c.Git().WorkingTree.WorktreeFileDiffWithPager(file, false, pagerCmd, width)
+			secondaryPagerOutput = self.c.Git().WorkingTree.WorktreeFileDiffWithPager(file, true, pagerCmd, width)
+		}
+	}
+
 	// grabbing locks here and releasing before we finish the function
 	// because pushing say the secondary context could mean entering this function
 	// again, and we don't want to have a deadlock
@@ -66,10 +81,14 @@ func (self *StagingHelper) RefreshStagingPanel(focusOpts types.OnFocusOpts) {
 	mainContext.SetState(
 		patch_exploring.NewState(mainDiff, mainSelectedLineIdx, mainContext.GetView(), mainContext.GetState(), hunkMode),
 	)
+	// Set pager output if available
+	self.applyPagerOutput(mainContext, mainPagerOutput)
 
 	secondaryContext.SetState(
 		patch_exploring.NewState(secondaryDiff, secondarySelectedLineIdx, secondaryContext.GetView(), secondaryContext.GetState(), hunkMode),
 	)
+	// Set pager output if available
+	self.applyPagerOutput(secondaryContext, secondaryPagerOutput)
 
 	mainState := mainContext.GetState()
 	secondaryState := secondaryContext.GetState()
@@ -124,4 +143,11 @@ func (self *StagingHelper) secondaryStagingFocused() bool {
 
 func (self *StagingHelper) mainStagingFocused() bool {
 	return self.c.Context().CurrentStatic().GetKey() == self.c.Contexts().Staging.GetKey()
+}
+
+// applyPagerOutput sets the pager output on a patch explorer context if available
+func (self *StagingHelper) applyPagerOutput(ctx *context.PatchExplorerContext, pagerOutput string) {
+	if state := ctx.GetState(); state != nil && pagerOutput != "" {
+		state.SetPagerOutput(pagerOutput)
+	}
 }

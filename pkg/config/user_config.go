@@ -346,6 +346,8 @@ type PagingConfig struct {
 	ExternalDiffCommand string `yaml:"externalDiffCommand"`
 	// If true, Lazygit will use git's `diff.external` config for paging. The advantage over `externalDiffCommand` is that this can be configured per file type in .gitattributes; see https://git-scm.com/docs/gitattributes#_defining_an_external_diff_driver.
 	UseExternalDiffGitConfig bool `yaml:"useExternalDiffGitConfig"`
+	// If true, use the pager in the staging view (line-by-line staging). Note: pagers that significantly alter line structure (e.g. side-by-side mode) may cause visual glitches with line selection.
+	UseInStagingView bool `yaml:"useInStagingView"`
 }
 
 type CommitConfig struct {

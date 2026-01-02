@@ -1,6 +1,8 @@
 package patch_exploring
 
 import (
+	"fmt"
+	"os"
 	"strings"
 
 	"github.com/jesseduffield/generics/set"
@@ -34,6 +36,14 @@ type State struct {
 	// on by default.
 	// this makes a difference for whether we want to escape out of hunk mode
 	userEnabledHunkMode bool
+
+	// pagerOutput holds the pager-rendered diff for display purposes.
+	// When set, this is used for rendering instead of the internal colored diff.
+	pagerOutput string
+	// pagerViewLineIndices maps pager output view lines to patch lines
+	pagerViewLineIndices []int
+	// pagerPatchLineIndices maps patch lines to pager output view lines
+	pagerPatchLineIndices []int
 }
 
 // these represent what select mode we're in
@@ -379,10 +389,401 @@ func (s *State) AdjustSelectedLineIdx(change int) {
 }
 
 func (s *State) RenderForLineIndices(includedLineIndices []int) string {
+	// If pager output is available, use it for display
+	if s.pagerOutput != "" {
+		return s.pagerOutput
+	}
+
 	includedLineIndicesSet := set.NewFromSlice(includedLineIndices)
 	return s.patch.FormatView(patch.FormatViewOpts{
 		IncLineIndices: includedLineIndicesSet,
 	})
+}
+
+// SetPagerOutput sets the pager-rendered diff output for display.
+// This builds a line mapping between pager output and the original diff.
+// The approach: match patch content lines to pager lines by their actual content.
+func (s *State) SetPagerOutput(pagerOutput string) {
+	s.pagerOutput = pagerOutput
+
+	if pagerOutput == "" {
+		s.pagerViewLineIndices = nil
+		s.pagerPatchLineIndices = nil
+		return
+	}
+
+	pagerLines := strings.Split(strings.TrimSuffix(pagerOutput, "\n"), "\n")
+	patchLines := s.patch.Lines()
+	patchLineCount := len(patchLines)
+	pagerLineCount := len(pagerLines)
+
+	// DEBUG: Log the mapping setup
+	debugFile, _ := os.OpenFile("/tmp/pager_mapping_debug.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if debugFile != nil {
+		fmt.Fprintf(debugFile, "\n=== SetPagerOutput called ===\n")
+		fmt.Fprintf(debugFile, "patchLineCount=%d pagerLineCount=%d\n", patchLineCount, pagerLineCount)
+		defer debugFile.Close()
+	}
+
+	// pagerViewLineIndices[patchLineIdx] = corresponding pagerLineIdx
+	s.pagerViewLineIndices = make([]int, patchLineCount)
+	// pagerPatchLineIndices[pagerLineIdx] = corresponding patchLineIdx (-1 if decoration)
+	s.pagerPatchLineIndices = make([]int, pagerLineCount)
+
+	// Initialize pagerPatchLineIndices to -1 (no match)
+	for i := range s.pagerPatchLineIndices {
+		s.pagerPatchLineIndices[i] = -1
+	}
+
+	// Strip ANSI codes from all pager lines for matching
+	strippedPagerLines := make([]string, pagerLineCount)
+	for i, line := range pagerLines {
+		strippedPagerLines[i] = stripAnsiCodes(line)
+	}
+
+	// For each patch content line, find its corresponding pager line by content matching
+	// We search forward from the last matched position to handle duplicates correctly
+	lastMatchedPagerIdx := 0
+	firstContentPagerLine := -1
+
+	for patchIdx, patchLine := range patchLines {
+		if isDiffHeaderLine(patchLine.Content) {
+			// Header lines will be mapped later
+			continue
+		}
+
+		// Get the patch line content (without the leading +/- / space for change lines)
+		patchContent := patchLine.Content
+
+		// Search for this content in pager output, starting from last match
+		found := false
+		for pagerIdx := lastMatchedPagerIdx; pagerIdx < pagerLineCount; pagerIdx++ {
+			strippedPager := strippedPagerLines[pagerIdx]
+
+			// Check if the pager line contains the patch content
+			// The pager might add prefixes (line numbers) or styling, but the core content should match
+			if contentMatches(patchContent, strippedPager) {
+				s.pagerViewLineIndices[patchIdx] = pagerIdx
+				s.pagerPatchLineIndices[pagerIdx] = patchIdx
+				lastMatchedPagerIdx = pagerIdx + 1
+
+				if firstContentPagerLine == -1 {
+					firstContentPagerLine = pagerIdx
+				}
+
+				if debugFile != nil && patchIdx < 30 {
+					fmt.Fprintf(debugFile, "MATCH: patch[%d] %q -> pager[%d]\n", patchIdx, truncate(patchContent, 40), pagerIdx)
+				}
+				found = true
+				break
+			}
+		}
+
+		if !found {
+			// No match found - map to the last matched pager line or 0
+			if lastMatchedPagerIdx > 0 {
+				s.pagerViewLineIndices[patchIdx] = lastMatchedPagerIdx - 1
+			}
+			if debugFile != nil && patchIdx < 30 {
+				fmt.Fprintf(debugFile, "NO MATCH: patch[%d] %q\n", patchIdx, truncate(patchContent, 40))
+			}
+		}
+	}
+
+	// For header lines, map to the first content pager line
+	if firstContentPagerLine == -1 {
+		firstContentPagerLine = 0
+	}
+	for i, line := range patchLines {
+		if isDiffHeaderLine(line.Content) {
+			s.pagerViewLineIndices[i] = firstContentPagerLine
+		}
+	}
+
+	// Rebuild viewLineIndices and patchLineIndices to be 1:1 mappings (no wrapping)
+	// since the pager handles its own formatting
+	oldSelectedPatchLine := 0
+	oldRangeStartPatchLine := 0
+	if s.selectedLineIdx < len(s.patchLineIndices) {
+		oldSelectedPatchLine = s.patchLineIndices[s.selectedLineIdx]
+	}
+	if s.rangeStartLineIdx < len(s.patchLineIndices) {
+		oldRangeStartPatchLine = s.patchLineIndices[s.rangeStartLineIdx]
+	}
+
+	s.viewLineIndices = make([]int, patchLineCount)
+	s.patchLineIndices = make([]int, patchLineCount)
+	for i := 0; i < patchLineCount; i++ {
+		s.viewLineIndices[i] = i
+		s.patchLineIndices[i] = i
+	}
+
+	if oldSelectedPatchLine < patchLineCount {
+		s.selectedLineIdx = oldSelectedPatchLine
+	}
+	if oldRangeStartPatchLine < patchLineCount {
+		s.rangeStartLineIdx = oldRangeStartPatchLine
+	}
+}
+
+// stripAnsiCodes removes ANSI escape sequences and pager decorations from a string
+func stripAnsiCodes(s string) string {
+	// First strip ANSI escape sequences: ESC[ followed by parameters and a letter
+	// Use runes to preserve UTF-8 characters
+	var result strings.Builder
+	runes := []rune(s)
+	i := 0
+	for i < len(runes) {
+		if i+1 < len(runes) && runes[i] == '\x1b' && runes[i+1] == '[' {
+			// Skip until we find the terminating letter
+			j := i + 2
+			for j < len(runes) && (runes[j] == ';' || (runes[j] >= '0' && runes[j] <= '9')) {
+				j++
+			}
+			if j < len(runes) {
+				j++ // skip the terminating letter
+			}
+			i = j
+		} else {
+			result.WriteRune(runes[i])
+			i++
+		}
+	}
+
+	stripped := result.String()
+
+	// Strip delta's box-drawing decorations and line numbers if present
+	// Delta format with --line-numbers: "│  57 │ 57 │    actual code"
+	// We want to extract just "    actual code"
+	// Without --line-numbers: just the content (possibly with leading +/- stripped by delta)
+	lastPipe := strings.LastIndex(stripped, "│")
+	if lastPipe != -1 && lastPipe < len(stripped)-1 {
+		stripped = stripped[lastPipe+len("│"):]
+	}
+
+	return stripped
+}
+
+// contentMatches checks if a patch line content matches a pager line content
+// The pager might transform the content (add/remove leading +/- markers, etc.)
+func contentMatches(patchContent, pagerContent string) bool {
+	// Normalize both strings for comparison
+	patchNorm := normalizeForMatch(patchContent)
+	pagerNorm := normalizeForMatch(pagerContent)
+
+	// Exact match after normalization
+	if patchNorm == pagerNorm {
+		return true
+	}
+
+	// For change lines, the pager might strip the leading +/- marker
+	// So also check if patch content without marker matches
+	if len(patchContent) > 0 && (patchContent[0] == '+' || patchContent[0] == '-' || patchContent[0] == ' ') {
+		patchWithoutMarker := normalizeForMatch(patchContent[1:])
+		if patchWithoutMarker == pagerNorm {
+			return true
+		}
+	}
+
+	// Check if pager content contains the patch content (for cases where pager adds prefixes)
+	if len(patchNorm) > 0 && strings.Contains(pagerNorm, patchNorm) {
+		return true
+	}
+
+	return false
+}
+
+// normalizeForMatch normalizes a string for content matching
+func normalizeForMatch(s string) string {
+	// Trim leading/trailing whitespace but preserve internal structure
+	return strings.TrimSpace(s)
+}
+
+// truncate shortens a string for debug output
+func truncate(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
+}
+
+// isDecorationLine checks if a pager line is a decoration (hunk header, separator, etc.)
+// rather than actual diff content
+func isDecorationLine(pagerLine string) bool {
+	// Strip ANSI codes first
+	stripped := stripAnsiOnly(pagerLine)
+	trimmed := strings.TrimSpace(stripped)
+
+	// Empty lines after stripping are decorations
+	if trimmed == "" {
+		return true
+	}
+
+	// Check for separator lines that are only box-drawing characters
+	// This includes delta's header box borders (───┐, ───┘) and line decorations
+	isOnlyBoxDrawing := true
+	for _, r := range trimmed {
+		// Include all common box-drawing characters used by delta:
+		// ─ (horizontal), │ (vertical), ┐┘┌└ (corners), ⋮ (vertical dots)
+		// ═ (double horizontal), ╭╮╰╯ (rounded corners), ┼┬┴ (intersections)
+		if r != '─' && r != '═' && r != '│' && r != '⋮' &&
+			r != '┼' && r != '┬' && r != '┴' &&
+			r != '╭' && r != '╮' && r != '╰' && r != '╯' &&
+			r != '┐' && r != '┘' && r != '┌' && r != '└' &&
+			r != ' ' {
+			isOnlyBoxDrawing = false
+			break
+		}
+	}
+	if isOnlyBoxDrawing {
+		return true
+	}
+
+	// Delta hunk headers without line numbers look like: "@@ -1,5 +1,7 @@" or similar
+	// These start with @@ and are decorations
+	if strings.HasPrefix(trimmed, "@@") {
+		return true
+	}
+
+	// Delta file headers might look like paths or have special formatting
+	// But we can't reliably detect these without more context
+
+	// If line has ⋮ (delta line number separator), it's a content line
+	// This includes empty content lines like "  2 ⋮  2 │" which represent blank lines in the diff
+	if strings.Contains(stripped, "⋮") {
+		return false // Content line (may be empty but still represents a diff line)
+	}
+
+	// Lines with │ but no ⋮ might be file/hunk header decorations (e.g., "1: │")
+	// Check if there's actual content after the pipe
+	if strings.Contains(stripped, "│") {
+		lastPipe := strings.LastIndex(stripped, "│")
+		if lastPipe != -1 && lastPipe < len(stripped)-1 {
+			afterPipe := strings.TrimSpace(stripped[lastPipe+len("│"):])
+			if afterPipe == "" {
+				return true // No content after pipe and no line numbers = decoration
+			}
+		}
+		// If just "│" alone or "N: │" pattern, it's decoration
+		if lastPipe == len(stripped)-len("│") {
+			return true
+		}
+		return false // Has content after pipe
+	}
+
+	// Without box characters, assume it's content
+	return false
+}
+
+// stripAnsiOnly removes only ANSI escape sequences, not box characters
+func stripAnsiOnly(s string) string {
+	var result strings.Builder
+	runes := []rune(s)
+	i := 0
+	for i < len(runes) {
+		if i+1 < len(runes) && runes[i] == '\x1b' && runes[i+1] == '[' {
+			j := i + 2
+			for j < len(runes) && (runes[j] == ';' || (runes[j] >= '0' && runes[j] <= '9')) {
+				j++
+			}
+			if j < len(runes) {
+				j++
+			}
+			i = j
+		} else {
+			result.WriteRune(runes[i])
+			i++
+		}
+	}
+	return result.String()
+}
+
+// isEmptyDecorationLine checks if a pager line is a delta file/hunk header
+// (e.g., "66: func..." context lines) that have no actual diff content.
+// These are different from empty content lines which have ⋮ between line numbers.
+func isEmptyDecorationLine(pagerLine string) bool {
+	stripped := stripAnsiCodes(pagerLine)
+	if strings.TrimSpace(stripped) != "" {
+		return false // Has content after stripping, not empty
+	}
+
+	// If the original line (with ANSI) has box characters, it's a content row
+	// that happens to have empty content (blank line in the diff)
+	if strings.Contains(pagerLine, "│") || strings.Contains(pagerLine, "⋮") {
+		// Check if there's actual structure (line numbers) - if so, it's a content line
+		// that just has empty content
+		return false
+	}
+
+	return true // Truly empty = file/hunk header decoration
+}
+
+// isDiffHeaderLine checks if a patch line is a diff header (not actual content)
+func isDiffHeaderLine(line string) bool {
+	return strings.HasPrefix(line, "diff --git") ||
+		strings.HasPrefix(line, "index ") ||
+		strings.HasPrefix(line, "--- ") ||
+		strings.HasPrefix(line, "+++ ") ||
+		strings.HasPrefix(line, "@@")
+}
+
+// HasPagerOutput returns true if pager output is available for display
+func (s *State) HasPagerOutput() bool {
+	return s.pagerOutput != ""
+}
+
+// SelectedViewRangeForPager returns the view range translated to pager coordinates
+// when pager output is active. Falls back to regular SelectedViewRange otherwise.
+func (s *State) SelectedViewRangeForPager() (int, int) {
+	if !s.HasPagerOutput() || s.pagerViewLineIndices == nil {
+		return s.SelectedViewRange()
+	}
+
+	// Get patch line indices directly and translate to pager coordinates
+	patchStart, patchEnd := s.SelectedPatchRange()
+
+	// DEBUG: Log the translation
+	debugFile, _ := os.OpenFile("/tmp/pager_nav_debug.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if debugFile != nil {
+		viewStart, viewEnd := s.SelectedViewRange()
+		fmt.Fprintf(debugFile, "NAV: viewRange=[%d,%d] patchRange=[%d,%d] ", viewStart, viewEnd, patchStart, patchEnd)
+		defer debugFile.Close()
+	}
+
+	// Bounds check before indexing
+	if patchStart >= len(s.pagerViewLineIndices) || patchEnd >= len(s.pagerViewLineIndices) {
+		if debugFile != nil {
+			fmt.Fprintf(debugFile, "FALLBACK (out of bounds)\n")
+		}
+		return s.SelectedViewRange()
+	}
+
+	pagerStart := s.pagerViewLineIndices[patchStart]
+	pagerEnd := s.pagerViewLineIndices[patchEnd]
+
+	if debugFile != nil {
+		fmt.Fprintf(debugFile, "pagerRange=[%d,%d]\n", pagerStart, pagerEnd)
+	}
+
+	return pagerStart, pagerEnd
+}
+
+// CalculateOriginForPager calculates the origin adjusted for pager output
+func (s *State) CalculateOriginForPager(currentOrigin int, bufferHeight int, numLines int) int {
+	if !s.HasPagerOutput() || s.pagerViewLineIndices == nil {
+		return s.CalculateOrigin(currentOrigin, bufferHeight, numLines)
+	}
+
+	firstLineIdx, lastLineIdx := s.SelectedViewRangeForPager()
+
+	// Get selected patch line and translate to pager coordinates
+	_, selectedPatchLineIdx := s.SelectedPatchRange()
+	if selectedPatchLineIdx >= len(s.pagerViewLineIndices) {
+		return s.CalculateOrigin(currentOrigin, bufferHeight, numLines)
+	}
+	selectedLineIdx := s.pagerViewLineIndices[selectedPatchLineIdx]
+
+	return calculateOrigin(currentOrigin, bufferHeight, numLines, firstLineIdx, lastLineIdx, selectedLineIdx, s.selectMode)
 }
 
 func (s *State) PlainRenderSelected() string {

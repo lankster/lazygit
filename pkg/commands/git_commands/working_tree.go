@@ -257,6 +257,43 @@ func (self *WorkingTreeCommands) WorktreeFileDiff(file *models.File, plain bool,
 	return s
 }
 
+// WorktreeFileDiffWithPager returns the diff of a file piped through the configured pager.
+// The pagerCmd should be the pager command string (e.g. "delta --dark --paging=never").
+// Returns empty string if the pager execution fails.
+func (self *WorkingTreeCommands) WorktreeFileDiffWithPager(file *models.File, cached bool, pagerCmd string, width int) string {
+	contextSize := self.UserConfig().Git.DiffContextSize
+	colorArg := self.pagerConfig.GetColorArg()
+	prevPath := file.GetPreviousPath()
+	noIndex := !file.GetIsTracked() && !file.GetHasStagedChanges() && !cached && file.GetIsFile()
+
+	cmdArgs := NewGitCmd("diff").
+		Arg("--no-ext-diff").
+		Arg("--submodule").
+		Arg(fmt.Sprintf("--unified=%d", contextSize)).
+		Arg(fmt.Sprintf("--color=%s", colorArg)).
+		ArgIf(self.UserConfig().Git.IgnoreWhitespaceInDiffView, "--ignore-all-space").
+		Arg(fmt.Sprintf("--find-renames=%d%%", self.UserConfig().Git.RenameSimilarityThreshold)).
+		ArgIf(cached, "--cached").
+		ArgIf(noIndex, "--no-index").
+		Arg("--").
+		ArgIf(noIndex, "/dev/null").
+		Arg(file.GetPath()).
+		ArgIf(prevPath != "", prevPath).
+		Dir(self.repoPaths.worktreePath).
+		ToArgv()
+
+	// Pipe through the pager
+	fullCmd := strings.Join(cmdArgs, " ") + " | " + pagerCmd
+	output, err := self.cmd.New([]string{"sh", "-c", fullCmd}).
+		AddEnvVars("TERM=dumb", fmt.Sprintf("COLUMNS=%d", width)).
+		DontLog().
+		RunWithOutput()
+	if err != nil {
+		return ""
+	}
+	return output
+}
+
 func (self *WorkingTreeCommands) WorktreeFileDiffCmdObj(node models.IFile, plain bool, cached bool) *oscommands.CmdObj {
 	colorArg := self.pagerConfig.GetColorArg()
 	if plain {

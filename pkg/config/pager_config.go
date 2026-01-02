@@ -73,6 +73,15 @@ func (self *PagerConfig) GetUseExternalDiffGitConfig() bool {
 	return currentPagerConfig.UseExternalDiffGitConfig
 }
 
+func (self *PagerConfig) StagingPagerEnabled() bool {
+	currentPagerConfig := self.currentPagerConfig()
+	if currentPagerConfig == nil {
+		return false
+	}
+	// Only enable if there's actually a pager configured and staging view usage is enabled
+	return currentPagerConfig.UseInStagingView && string(currentPagerConfig.Pager) != ""
+}
+
 func (self *PagerConfig) CyclePagers() {
 	self.pagerIndex = (self.pagerIndex + 1) % len(self.getUserConfig().Git.Pagers)
 }

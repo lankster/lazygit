@@ -19,6 +19,19 @@ git:
 
 The `colorArg` key is for whether you want the `--color=always` arg in your `git diff` command. Some pagers want it set to `always`, others want it set to `never`. The default is `always`, since that's what most pagers need.
 
+## Using pagers in the staging view
+
+By default, pagers are only used in the main diff view. You can also enable pagers in the staging view (where you stage individual lines or hunks) by setting `useInStagingView: true`:
+
+```yaml
+git:
+  pagers:
+    - pager: delta --dark --paging=never
+      useInStagingView: true
+```
+
+**Note:** Pagers that significantly alter line structure (e.g. side-by-side mode like `delta -s`) may cause visual glitches with line selection in the staging view. Stick to pagers that maintain a 1:1 line mapping for the best experience.
+
 ## Delta:
 
 ```yaml
