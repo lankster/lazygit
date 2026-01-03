@@ -447,3 +447,76 @@ func TestWrapViewLinesToWidth(t *testing.T) {
 		})
 	}
 }
+
+// TestWrapViewLinesToWidth_ANSI tests that ANSI escape sequences are handled correctly
+// during line wrapping. ANSI codes should not contribute to display width.
+// Note: This can't be validated against gocui directly since gocui parses ANSI codes
+// at content-set time, but the result should be equivalent.
+func TestWrapViewLinesToWidth_ANSI(t *testing.T) {
+	tests := []struct {
+		name                 string
+		text                 string
+		width                int
+		expectedWrappedLines []string
+	}{
+		{
+			name:  "Simple ANSI color code doesn't affect width",
+			text:  "\x1b[32mHello\x1b[0m World",
+			width: 11, // "Hello World" = 11 visible chars
+			expectedWrappedLines: []string{
+				"\x1b[32mHello\x1b[0m World",
+			},
+		},
+		{
+			name:  "ANSI code with wrap needed",
+			text:  "\x1b[32mHello\x1b[0m World",
+			width: 5, // "Hello" = 5 visible chars
+			expectedWrappedLines: []string{
+				"\x1b[32mHello\x1b[0m",
+				"World",
+			},
+		},
+		{
+			name:  "Complex ANSI code (24-bit color)",
+			text:  "\x1b[38;2;255;0;0mRed\x1b[0m \x1b[38;2;0;255;0mGreen\x1b[0m",
+			width: 9, // "Red Green" = 9 visible chars
+			expectedWrappedLines: []string{
+				"\x1b[38;2;255;0;0mRed\x1b[0m \x1b[38;2;0;255;0mGreen\x1b[0m",
+			},
+		},
+		{
+			name:  "ANSI in middle of word doesn't break wrap",
+			text:  "Hel\x1b[32mlo\x1b[0m World",
+			width: 5,
+			expectedWrappedLines: []string{
+				"Hel\x1b[32mlo\x1b[0m",
+				"World",
+			},
+		},
+		{
+			name:  "Multiple ANSI codes per line",
+			text:  "\x1b[31m+\x1b[0mAdded \x1b[32m-\x1b[0mRemoved",
+			width: 15, // "+Added -Removed" = 15 visible chars
+			expectedWrappedLines: []string{
+				"\x1b[31m+\x1b[0mAdded \x1b[32m-\x1b[0mRemoved",
+			},
+		},
+		{
+			name:  "Long line with ANSI should wrap correctly",
+			text:  "\x1b[32mThis is a longer line that should wrap\x1b[0m",
+			width: 20, // visible text is 38 chars
+			expectedWrappedLines: []string{
+				"\x1b[32mThis is a longer",
+				"line that should",
+				"wrap\x1b[0m",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			wrappedLines, _, _ := WrapViewLinesToWidth(true, false, tt.text, tt.width, 4)
+			assert.Equal(t, tt.expectedWrappedLines, wrappedLines)
+		})
+	}
+}

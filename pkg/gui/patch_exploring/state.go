@@ -401,12 +401,17 @@ func (s *State) RenderForLineIndices(includedLineIndices []int) string {
 }
 
 // SetPagerOutput sets the pager-rendered diff output for display.
-// This builds a line mapping between pager output and the original diff.
-// The approach: match patch content lines to pager lines by their actual content.
-func (s *State) SetPagerOutput(pagerOutput string) {
-	s.pagerOutput = pagerOutput
-
+// This builds a line mapping between pager output and the original diff,
+// and handles wrapping of the pager output to produce direct view↔patch mappings.
+//
+// The approach:
+// 1. Build patch↔pager mapping by content matching
+// 2. Wrap the pager output using the view's wrap settings
+// 3. Compose into direct viewLineIndices/patchLineIndices mappings
+// 4. Decoration lines (pager lines with no patch equivalent) map to nearest patch line
+func (s *State) SetPagerOutput(pagerOutput string, view *gocui.View) {
 	if pagerOutput == "" {
+		s.pagerOutput = ""
 		s.pagerViewLineIndices = nil
 		s.pagerPatchLineIndices = nil
 		return
@@ -421,19 +426,16 @@ func (s *State) SetPagerOutput(pagerOutput string) {
 	debugFile, _ := os.OpenFile("/tmp/pager_mapping_debug.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if debugFile != nil {
 		fmt.Fprintf(debugFile, "\n=== SetPagerOutput called ===\n")
-		fmt.Fprintf(debugFile, "patchLineCount=%d pagerLineCount=%d\n", patchLineCount, pagerLineCount)
+		fmt.Fprintf(debugFile, "patchLineCount=%d pagerLineCount=%d wrap=%v width=%d\n",
+			patchLineCount, pagerLineCount, view.Wrap, view.InnerWidth())
 		defer debugFile.Close()
 	}
 
-	// pagerViewLineIndices[patchLineIdx] = corresponding pagerLineIdx
-	s.pagerViewLineIndices = make([]int, patchLineCount)
-	// pagerPatchLineIndices[pagerLineIdx] = corresponding patchLineIdx (-1 if decoration)
-	s.pagerPatchLineIndices = make([]int, pagerLineCount)
-
-	// Initialize pagerPatchLineIndices to -1 (no match)
-	for i := range s.pagerPatchLineIndices {
-		s.pagerPatchLineIndices[i] = -1
-	}
+	// Step 1: Build patch↔pager mapping
+	// patchToPagerIdx[patchIdx] = corresponding pagerLineIdx
+	patchToPagerIdx := make([]int, patchLineCount)
+	// pagerToPatchIdx[pagerIdx] = corresponding patchLineIdx (will be filled in, no -1 values)
+	pagerToPatchIdx := make([]int, pagerLineCount)
 
 	// Strip ANSI codes from all pager lines for matching
 	strippedPagerLines := make([]string, pagerLineCount)
@@ -452,7 +454,6 @@ func (s *State) SetPagerOutput(pagerOutput string) {
 			continue
 		}
 
-		// Get the patch line content (without the leading +/- / space for change lines)
 		patchContent := patchLine.Content
 
 		// Search for this content in pager output, starting from last match
@@ -460,11 +461,9 @@ func (s *State) SetPagerOutput(pagerOutput string) {
 		for pagerIdx := lastMatchedPagerIdx; pagerIdx < pagerLineCount; pagerIdx++ {
 			strippedPager := strippedPagerLines[pagerIdx]
 
-			// Check if the pager line contains the patch content
-			// The pager might add prefixes (line numbers) or styling, but the core content should match
 			if contentMatches(patchContent, strippedPager) {
-				s.pagerViewLineIndices[patchIdx] = pagerIdx
-				s.pagerPatchLineIndices[pagerIdx] = patchIdx
+				patchToPagerIdx[patchIdx] = pagerIdx
+				pagerToPatchIdx[pagerIdx] = patchIdx
 				lastMatchedPagerIdx = pagerIdx + 1
 
 				if firstContentPagerLine == -1 {
@@ -472,7 +471,8 @@ func (s *State) SetPagerOutput(pagerOutput string) {
 				}
 
 				if debugFile != nil && patchIdx < 30 {
-					fmt.Fprintf(debugFile, "MATCH: patch[%d] %q -> pager[%d]\n", patchIdx, truncate(patchContent, 40), pagerIdx)
+					fmt.Fprintf(debugFile, "MATCH: patch[%d] %q -> pager[%d]\n",
+						patchIdx, truncate(patchContent, 40), pagerIdx)
 				}
 				found = true
 				break
@@ -482,7 +482,7 @@ func (s *State) SetPagerOutput(pagerOutput string) {
 		if !found {
 			// No match found - map to the last matched pager line or 0
 			if lastMatchedPagerIdx > 0 {
-				s.pagerViewLineIndices[patchIdx] = lastMatchedPagerIdx - 1
+				patchToPagerIdx[patchIdx] = lastMatchedPagerIdx - 1
 			}
 			if debugFile != nil && patchIdx < 30 {
 				fmt.Fprintf(debugFile, "NO MATCH: patch[%d] %q\n", patchIdx, truncate(patchContent, 40))
@@ -496,12 +496,49 @@ func (s *State) SetPagerOutput(pagerOutput string) {
 	}
 	for i, line := range patchLines {
 		if isDiffHeaderLine(line.Content) {
-			s.pagerViewLineIndices[i] = firstContentPagerLine
+			patchToPagerIdx[i] = firstContentPagerLine
 		}
 	}
 
-	// Rebuild viewLineIndices and patchLineIndices to be 1:1 mappings (no wrapping)
-	// since the pager handles its own formatting
+	// Fill in pagerToPatchIdx for decoration lines (lines with no direct patch match)
+	// by mapping them to the nearest patch line (carry forward from previous)
+	lastValidPatchIdx := 0
+	for pagerIdx := 0; pagerIdx < pagerLineCount; pagerIdx++ {
+		if pagerToPatchIdx[pagerIdx] != 0 || pagerIdx == 0 {
+			// This pager line was matched to a patch line, or it's the first line
+			// For first line, check if it was actually matched
+			matched := false
+			for patchIdx := 0; patchIdx < patchLineCount; patchIdx++ {
+				if patchToPagerIdx[patchIdx] == pagerIdx {
+					matched = true
+					lastValidPatchIdx = patchIdx
+					break
+				}
+			}
+			if matched {
+				pagerToPatchIdx[pagerIdx] = lastValidPatchIdx
+			} else {
+				// Decoration line at position 0 or unmatched - use lastValidPatchIdx
+				pagerToPatchIdx[pagerIdx] = lastValidPatchIdx
+			}
+		} else {
+			// Decoration line - map to the previous patch line
+			pagerToPatchIdx[pagerIdx] = lastValidPatchIdx
+		}
+	}
+
+	// Step 2: Wrap the pager output
+	wrappedPagerLines, pagerToViewIdx, viewToPagerIdx := utils.WrapViewLinesToWidth(
+		view.Wrap, view.Editable, strings.TrimSuffix(pagerOutput, "\n"), view.InnerWidth(), view.TabWidth)
+
+	wrappedLineCount := len(wrappedPagerLines)
+
+	if debugFile != nil {
+		fmt.Fprintf(debugFile, "After wrapping: wrappedLineCount=%d\n", wrappedLineCount)
+	}
+
+	// Step 3: Compose mappings to create direct view↔patch mappings
+	// Save old selection in patch coordinates
 	oldSelectedPatchLine := 0
 	oldRangeStartPatchLine := 0
 	if s.selectedLineIdx < len(s.patchLineIndices) {
@@ -511,18 +548,55 @@ func (s *State) SetPagerOutput(pagerOutput string) {
 		oldRangeStartPatchLine = s.patchLineIndices[s.rangeStartLineIdx]
 	}
 
+	// viewLineIndices[patchIdx] = first wrapped view line for this patch line
 	s.viewLineIndices = make([]int, patchLineCount)
-	s.patchLineIndices = make([]int, patchLineCount)
-	for i := 0; i < patchLineCount; i++ {
-		s.viewLineIndices[i] = i
-		s.patchLineIndices[i] = i
+	for patchIdx := 0; patchIdx < patchLineCount; patchIdx++ {
+		pagerIdx := patchToPagerIdx[patchIdx]
+		if pagerIdx < len(pagerToViewIdx) {
+			s.viewLineIndices[patchIdx] = pagerToViewIdx[pagerIdx]
+		} else {
+			// Fallback: map to last view line
+			s.viewLineIndices[patchIdx] = wrappedLineCount - 1
+		}
 	}
 
-	if oldSelectedPatchLine < patchLineCount {
-		s.selectedLineIdx = oldSelectedPatchLine
+	// patchLineIndices[viewIdx] = patch line for this wrapped view line
+	s.patchLineIndices = make([]int, wrappedLineCount)
+	for viewIdx := 0; viewIdx < wrappedLineCount; viewIdx++ {
+		pagerIdx := viewToPagerIdx[viewIdx]
+		if pagerIdx < len(pagerToPatchIdx) {
+			s.patchLineIndices[viewIdx] = pagerToPatchIdx[pagerIdx]
+		} else {
+			// Fallback: map to last patch line
+			s.patchLineIndices[viewIdx] = patchLineCount - 1
+		}
 	}
-	if oldRangeStartPatchLine < patchLineCount {
-		s.rangeStartLineIdx = oldRangeStartPatchLine
+
+	// Store the wrapped pager output for display
+	s.pagerOutput = strings.Join(wrappedPagerLines, "\n")
+
+	// Store the intermediate mappings for SelectedViewRangeForPager (may still be needed)
+	s.pagerViewLineIndices = patchToPagerIdx
+	s.pagerPatchLineIndices = pagerToPatchIdx
+
+	// Restore selection in view coordinates
+	if oldSelectedPatchLine < len(s.viewLineIndices) {
+		s.selectedLineIdx = s.viewLineIndices[oldSelectedPatchLine]
+	}
+	if oldRangeStartPatchLine < len(s.viewLineIndices) {
+		s.rangeStartLineIdx = s.viewLineIndices[oldRangeStartPatchLine]
+	}
+
+	if debugFile != nil {
+		fmt.Fprintf(debugFile, "Final: selectedLineIdx=%d rangeStartLineIdx=%d\n",
+			s.selectedLineIdx, s.rangeStartLineIdx)
+		// Log first few mappings
+		for i := 0; i < min(10, patchLineCount); i++ {
+			fmt.Fprintf(debugFile, "  viewLineIndices[%d]=%d\n", i, s.viewLineIndices[i])
+		}
+		for i := 0; i < min(10, wrappedLineCount); i++ {
+			fmt.Fprintf(debugFile, "  patchLineIndices[%d]=%d\n", i, s.patchLineIndices[i])
+		}
 	}
 }
 
@@ -732,58 +806,20 @@ func (s *State) HasPagerOutput() bool {
 	return s.pagerOutput != ""
 }
 
-// SelectedViewRangeForPager returns the view range translated to pager coordinates
-// when pager output is active. Falls back to regular SelectedViewRange otherwise.
+// SelectedViewRangeForPager returns the view range for the current selection.
+// With Option B implementation, viewLineIndices/patchLineIndices already include
+// the pager transformation, so this just delegates to SelectedViewRange().
+// Kept for API compatibility.
 func (s *State) SelectedViewRangeForPager() (int, int) {
-	if !s.HasPagerOutput() || s.pagerViewLineIndices == nil {
-		return s.SelectedViewRange()
-	}
-
-	// Get patch line indices directly and translate to pager coordinates
-	patchStart, patchEnd := s.SelectedPatchRange()
-
-	// DEBUG: Log the translation
-	debugFile, _ := os.OpenFile("/tmp/pager_nav_debug.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if debugFile != nil {
-		viewStart, viewEnd := s.SelectedViewRange()
-		fmt.Fprintf(debugFile, "NAV: viewRange=[%d,%d] patchRange=[%d,%d] ", viewStart, viewEnd, patchStart, patchEnd)
-		defer debugFile.Close()
-	}
-
-	// Bounds check before indexing
-	if patchStart >= len(s.pagerViewLineIndices) || patchEnd >= len(s.pagerViewLineIndices) {
-		if debugFile != nil {
-			fmt.Fprintf(debugFile, "FALLBACK (out of bounds)\n")
-		}
-		return s.SelectedViewRange()
-	}
-
-	pagerStart := s.pagerViewLineIndices[patchStart]
-	pagerEnd := s.pagerViewLineIndices[patchEnd]
-
-	if debugFile != nil {
-		fmt.Fprintf(debugFile, "pagerRange=[%d,%d]\n", pagerStart, pagerEnd)
-	}
-
-	return pagerStart, pagerEnd
+	return s.SelectedViewRange()
 }
 
-// CalculateOriginForPager calculates the origin adjusted for pager output
+// CalculateOriginForPager calculates the origin for scrolling.
+// With Option B implementation, viewLineIndices/patchLineIndices already include
+// the pager transformation, so this just delegates to CalculateOrigin().
+// Kept for API compatibility.
 func (s *State) CalculateOriginForPager(currentOrigin int, bufferHeight int, numLines int) int {
-	if !s.HasPagerOutput() || s.pagerViewLineIndices == nil {
-		return s.CalculateOrigin(currentOrigin, bufferHeight, numLines)
-	}
-
-	firstLineIdx, lastLineIdx := s.SelectedViewRangeForPager()
-
-	// Get selected patch line and translate to pager coordinates
-	_, selectedPatchLineIdx := s.SelectedPatchRange()
-	if selectedPatchLineIdx >= len(s.pagerViewLineIndices) {
-		return s.CalculateOrigin(currentOrigin, bufferHeight, numLines)
-	}
-	selectedLineIdx := s.pagerViewLineIndices[selectedPatchLineIdx]
-
-	return calculateOrigin(currentOrigin, bufferHeight, numLines, firstLineIdx, lastLineIdx, selectedLineIdx, s.selectMode)
+	return s.CalculateOrigin(currentOrigin, bufferHeight, numLines)
 }
 
 func (s *State) PlainRenderSelected() string {

@@ -123,10 +123,6 @@ func (self *StagingController) GetMouseKeybindings(opts types.KeybindingsOpts) [
 func (self *StagingController) GetOnFocus() func(types.OnFocusOpts) {
 	return func(opts types.OnFocusOpts) {
 		wrap := self.c.UserConfig().Gui.WrapLinesInStagingView
-		// Disable wrapping when pager is enabled - the pager handles its own wrapping
-		if self.c.State().GetPagerConfig().StagingPagerEnabled() {
-			wrap = false
-		}
 		self.c.Views().Staging.Wrap = wrap
 		self.c.Views().StagingSecondary.Wrap = wrap
 

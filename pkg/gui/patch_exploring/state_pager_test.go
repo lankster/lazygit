@@ -3,9 +3,29 @@ package patch_exploring
 import (
 	"testing"
 
+	"github.com/jesseduffield/gocui"
 	"github.com/jesseduffield/lazygit/pkg/commands/patch"
 	"github.com/stretchr/testify/assert"
 )
+
+// newTestView creates a mock view for testing with sensible defaults
+// The view is 100 chars wide (inner width 98) and wrapping disabled by default
+func newTestView() *gocui.View {
+	// Create view with dimensions: x0=0, y0=0, x1=99, y1=49
+	// This gives Width()=100, InnerWidth()=98
+	view := gocui.NewView("test", 0, 0, 99, 49, gocui.OutputNormal)
+	view.Wrap = false
+	return view
+}
+
+// newTestViewWithWrap creates a mock view with wrapping enabled
+func newTestViewWithWrap(width int) *gocui.View {
+	// x1 = width - 1 + 2 (for frame) = width + 1
+	// so Width() = width + 2, InnerWidth() = width
+	view := gocui.NewView("test", 0, 0, width+1, 49, gocui.OutputNormal)
+	view.Wrap = true
+	return view
+}
 
 // Helper to create a State for testing pager functionality
 func newStateForPagerTest(diff string) *State {
@@ -267,7 +287,7 @@ index abc123..def456 100644
 `
 
 	state := newStateForPagerTest(diff)
-	state.SetPagerOutput(pagerOutput)
+	state.SetPagerOutput(pagerOutput, newTestView())
 
 	// Verify pager output is set
 	assert.True(t, state.HasPagerOutput())
@@ -353,7 +373,7 @@ index abc123..def456 100644
 `
 
 	state := newStateForPagerTest(diff)
-	state.SetPagerOutput(pagerOutput)
+	state.SetPagerOutput(pagerOutput, newTestView())
 
 	assert.True(t, state.HasPagerOutput())
 	assert.NotNil(t, state.pagerViewLineIndices)
@@ -373,7 +393,7 @@ index abc123..def456 100644
 	state := newStateForPagerTest(diff)
 
 	// Set empty pager output
-	state.SetPagerOutput("")
+	state.SetPagerOutput("", newTestView())
 
 	assert.False(t, state.HasPagerOutput())
 	assert.Nil(t, state.pagerViewLineIndices)
@@ -431,18 +451,20 @@ index abc123..def456 100644
 	// 7: context3 (content -> patch 9)
 
 	state := newStateForPagerTest(diff)
-	state.SetPagerOutput(pagerOutput)
+	state.SetPagerOutput(pagerOutput, newTestView())
 
 	// Select the deletion line (patch line 7)
-	state.selectedLineIdx = 7
+	// With Option B, selectedLineIdx is a VIEW line index, not patch line
+	// viewLineIndices[patchLine] gives the view line for that patch line
+	state.selectedLineIdx = state.viewLineIndices[7]
 	state.selectMode = LINE
 
-	pagerStart, pagerEnd := state.SelectedViewRangeForPager()
+	viewStart, viewEnd := state.SelectedViewRange()
 
-	// Deletion line (patch 7) should map to pager line 5
+	// Deletion line (patch 7) should map to view line 5
 	// (3 decoration lines + 2 content lines before it)
-	assert.Equal(t, 5, pagerStart, "pagerStart should be 5 (deletion line in pager)")
-	assert.Equal(t, 5, pagerEnd, "pagerEnd should equal pagerStart in LINE mode")
+	assert.Equal(t, 5, viewStart, "viewStart should be 5 (deletion line in pager view)")
+	assert.Equal(t, 5, viewEnd, "viewEnd should equal viewStart in LINE mode")
 }
 
 func TestSelectedViewRangeForPager_RangeMode(t *testing.T) {
@@ -493,19 +515,20 @@ index abc123..def456 100644
 	// 9: context2 (patch 11)
 
 	state := newStateForPagerTest(diff)
-	state.SetPagerOutput(pagerOutput)
+	state.SetPagerOutput(pagerOutput, newTestView())
 
 	// Select range from deleted1 to added2 (patch lines 6-9)
-	state.rangeStartLineIdx = 6
-	state.selectedLineIdx = 9
+	// With Option B, indices are VIEW line indices
+	state.rangeStartLineIdx = state.viewLineIndices[6]
+	state.selectedLineIdx = state.viewLineIndices[9]
 	state.selectMode = RANGE
 
-	pagerStart, pagerEnd := state.SelectedViewRangeForPager()
+	viewStart, viewEnd := state.SelectedViewRange()
 
-	// deleted1 (patch 6) -> pager 4
-	// added2 (patch 9) -> pager 7
-	assert.Equal(t, 4, pagerStart, "pagerStart should map to deleted1 in pager")
-	assert.Equal(t, 7, pagerEnd, "pagerEnd should map to added2 in pager")
+	// deleted1 (patch 6) -> view line 4
+	// added2 (patch 9) -> view line 7
+	assert.Equal(t, 4, viewStart, "viewStart should map to deleted1 in view")
+	assert.Equal(t, 7, viewEnd, "viewEnd should map to added2 in view")
 }
 
 func TestSelectedViewRangeForPager_WithoutPagerOutput(t *testing.T) {
@@ -598,10 +621,11 @@ index abc123..def456 100644
 	// 10: func goodbye() { (content - patch 12)
 
 	state := newStateForPagerTest(diff)
-	state.SetPagerOutput(pagerOutput)
+	state.SetPagerOutput(pagerOutput, newTestView())
 
-	// Simulate selecting the deletion line
-	state.selectedLineIdx = 8 // patch line 8 = deletion
+	// Simulate selecting the deletion line (patch line 8)
+	// With Option B, selectedLineIdx is a VIEW line index
+	state.selectedLineIdx = state.viewLineIndices[8]
 	state.selectMode = LINE
 
 	// Get the line indices that would be staged
@@ -610,23 +634,23 @@ index abc123..def456 100644
 	// Should return only line 8 (the deletion)
 	assert.Equal(t, []int{8}, lineIndices, "Should stage only the deletion line")
 
-	// Verify the pager mapping
-	pagerStart, pagerEnd := state.SelectedViewRangeForPager()
+	// Verify the view range
+	viewStart, viewEnd := state.SelectedViewRange()
 
-	// Patch line 8 should map to pager line 6
+	// Patch line 8 should map to view line 6
 	// (3 decoration + 3 content lines before it)
-	assert.Equal(t, 6, pagerStart, "Deletion should be at pager line 6")
-	assert.Equal(t, 6, pagerEnd)
+	assert.Equal(t, 6, viewStart, "Deletion should be at view line 6")
+	assert.Equal(t, 6, viewEnd)
 
-	// Now select the addition line
-	state.selectedLineIdx = 9 // patch line 9 = addition
+	// Now select the addition line (patch line 9)
+	state.selectedLineIdx = state.viewLineIndices[9]
 
 	lineIndices = state.LineIndicesOfAddedOrDeletedLinesInSelectedPatchRange()
 	assert.Equal(t, []int{9}, lineIndices, "Should stage only the addition line")
 
-	pagerStart, pagerEnd = state.SelectedViewRangeForPager()
-	assert.Equal(t, 7, pagerStart, "Addition should be at pager line 7")
-	assert.Equal(t, 7, pagerEnd)
+	viewStart, viewEnd = state.SelectedViewRange()
+	assert.Equal(t, 7, viewStart, "Addition should be at view line 7")
+	assert.Equal(t, 7, viewEnd)
 }
 
 func TestPagerMapping_ContentLineCount(t *testing.T) {
@@ -740,36 +764,37 @@ index ab54e8b..d925f57 100644
 	// 14:   9 ⋮ 10 │} (content -> patch 16)
 
 	state := newStateForPagerTest(diff)
-	state.SetPagerOutput(pagerOutput)
+	state.SetPagerOutput(pagerOutput, newTestView())
 
 	// Test mapping for first deletion (patch line 8)
-	state.selectedLineIdx = 8
+	// With Option B, selectedLineIdx is a VIEW line index
+	state.selectedLineIdx = state.viewLineIndices[8]
 	state.selectMode = LINE
-	pagerStart, pagerEnd := state.SelectedViewRangeForPager()
+	viewStart, viewEnd := state.SelectedViewRange()
 
-	assert.Equal(t, 6, pagerStart, "First deletion (patch 8) should map to pager line 6")
-	assert.Equal(t, 6, pagerEnd)
+	assert.Equal(t, 6, viewStart, "First deletion (patch 8) should map to view line 6")
+	assert.Equal(t, 6, viewEnd)
 
 	// Verify we'd stage the right line
 	lineIndices := state.LineIndicesOfAddedOrDeletedLinesInSelectedPatchRange()
 	assert.Equal(t, []int{8}, lineIndices)
 
 	// Test mapping for second deletion (patch line 13)
-	state.selectedLineIdx = 13
-	pagerStart, pagerEnd = state.SelectedViewRangeForPager()
+	state.selectedLineIdx = state.viewLineIndices[13]
+	viewStart, viewEnd = state.SelectedViewRange()
 
-	assert.Equal(t, 11, pagerStart, "Second deletion (patch 13) should map to pager line 11")
-	assert.Equal(t, 11, pagerEnd)
+	assert.Equal(t, 11, viewStart, "Second deletion (patch 13) should map to view line 11")
+	assert.Equal(t, 11, viewEnd)
 
 	lineIndices = state.LineIndicesOfAddedOrDeletedLinesInSelectedPatchRange()
 	assert.Equal(t, []int{13}, lineIndices)
 
 	// Test mapping for last addition (patch line 15)
-	state.selectedLineIdx = 15
-	pagerStart, pagerEnd = state.SelectedViewRangeForPager()
+	state.selectedLineIdx = state.viewLineIndices[15]
+	viewStart, viewEnd = state.SelectedViewRange()
 
-	assert.Equal(t, 13, pagerStart, "Last addition (patch 15) should map to pager line 13")
-	assert.Equal(t, 13, pagerEnd)
+	assert.Equal(t, 13, viewStart, "Last addition (patch 15) should map to view line 13")
+	assert.Equal(t, 13, viewEnd)
 
 	lineIndices = state.LineIndicesOfAddedOrDeletedLinesInSelectedPatchRange()
 	assert.Equal(t, []int{15}, lineIndices)
@@ -828,42 +853,43 @@ index 1234567..abcdefg 100644
 	// 7: line4 (patch 9)
 
 	state := newStateForPagerTest(diff)
-	state.SetPagerOutput(pagerOutput)
+	state.SetPagerOutput(pagerOutput, newTestView())
 
-	// Scenario: User navigates to and selects the deletion line
-	state.selectedLineIdx = 7 // patch line 7 = "-old line3"
+	// Scenario: User navigates to and selects the deletion line (patch line 7)
+	// With Option B, selectedLineIdx is a VIEW line index
+	state.selectedLineIdx = state.viewLineIndices[7]
 	state.selectMode = LINE
 
-	// Get what would be highlighted in pager
-	highlightStart, highlightEnd := state.SelectedViewRangeForPager()
+	// Get what would be highlighted in view
+	highlightStart, highlightEnd := state.SelectedViewRange()
 
 	// Get what would be staged
 	stagingLines := state.LineIndicesOfAddedOrDeletedLinesInSelectedPatchRange()
 
-	// The highlight should be at pager line 5
-	assert.Equal(t, 5, highlightStart, "Highlight should be at pager line 5 (deletion)")
+	// The highlight should be at view line 5
+	assert.Equal(t, 5, highlightStart, "Highlight should be at view line 5 (deletion)")
 	assert.Equal(t, 5, highlightEnd)
 
 	// And we should stage patch line 7
 	assert.Equal(t, []int{7}, stagingLines, "Should stage patch line 7 (deletion)")
 
 	// CRITICAL: Verify the mapping is correct
-	// pagerViewLineIndices[patchLine] = pagerLine
-	assert.Equal(t, highlightStart, state.pagerViewLineIndices[7],
-		"pagerViewLineIndices[7] should equal the highlight position")
+	// viewLineIndices[patchLine] = viewLine
+	assert.Equal(t, highlightStart, state.viewLineIndices[7],
+		"viewLineIndices[7] should equal the highlight position")
 
-	// Now test the addition line
-	state.selectedLineIdx = 8 // patch line 8 = "+new line3"
+	// Now test the addition line (patch line 8)
+	state.selectedLineIdx = state.viewLineIndices[8]
 
-	highlightStart, highlightEnd = state.SelectedViewRangeForPager()
+	highlightStart, highlightEnd = state.SelectedViewRange()
 	stagingLines = state.LineIndicesOfAddedOrDeletedLinesInSelectedPatchRange()
 
-	assert.Equal(t, 6, highlightStart, "Highlight should be at pager line 6 (addition)")
+	assert.Equal(t, 6, highlightStart, "Highlight should be at view line 6 (addition)")
 	assert.Equal(t, 6, highlightEnd)
 	assert.Equal(t, []int{8}, stagingLines, "Should stage patch line 8 (addition)")
 
-	assert.Equal(t, highlightStart, state.pagerViewLineIndices[8],
-		"pagerViewLineIndices[8] should equal the highlight position")
+	assert.Equal(t, highlightStart, state.viewLineIndices[8],
+		"viewLineIndices[8] should equal the highlight position")
 }
 
 // =============================================================================
@@ -898,25 +924,140 @@ index abc..def 100644
 `
 
 	state := newStateForPagerTest(diff)
-	state.SetPagerOutput(pagerOutput)
+	state.SetPagerOutput(pagerOutput, newTestView())
 
 	// Select a change line and enable hunk mode
-	state.selectedLineIdx = 6 // -del1
+	// Patch lines: 6=-del1, 7=-del2, 8=+add1, 9=+add2, 10=+add3
+	// View lines (after pager): 4=del1, 5=del2, 6=add1, 7=add2, 8=add3
+	// With Option B, selectedLineIdx is a VIEW line index
+	state.selectedLineIdx = state.viewLineIndices[6] // -del1
 	state.selectMode = HUNK
 
-	// In hunk mode, SelectedViewRange should return the full block of changes
+	// In hunk mode, SelectedViewRange should return the full block of changes in VIEW coordinates
 	viewStart, viewEnd := state.SelectedViewRange()
 
-	// The hunk contains lines 6-10 (del1, del2, add1, add2, add3)
-	// But SelectedViewRange in HUNK mode returns the block of consecutive changes
-	assert.Equal(t, 6, viewStart, "Hunk should start at patch line 6")
-	assert.Equal(t, 10, viewEnd, "Hunk should end at patch line 10")
+	// The hunk contains patch lines 6-10 (del1, del2, add1, add2, add3)
+	// which map to view lines 4-8
+	assert.Equal(t, 4, viewStart, "Hunk should start at view line 4 (del1)")
+	assert.Equal(t, 8, viewEnd, "Hunk should end at view line 8 (add3)")
+}
 
-	// Get pager coordinates
-	pagerStart, pagerEnd := state.SelectedViewRangeForPager()
+// =============================================================================
+// Tests for wrapping support with pager
+// =============================================================================
 
-	// del1 (patch 6) -> pager 4
-	// add3 (patch 10) -> pager 8
-	assert.Equal(t, 4, pagerStart, "Pager hunk start should be line 4")
-	assert.Equal(t, 8, pagerEnd, "Pager hunk end should be line 8")
+func TestPagerMapping_WithWrapping(t *testing.T) {
+	// Test that wrapping works correctly with pager output
+	diff := `diff --git a/test.go b/test.go
+index abc123..def456 100644
+--- a/test.go
++++ b/test.go
+@@ -1,3 +1,3 @@
+ short
+-this is a very long line that will need to be wrapped when displayed in a narrow view
++this is a replacement long line that should also wrap in the view
+`
+
+	// Patch lines:
+	// 0-4: headers
+	// 5: short
+	// 6: -this is a very long line...
+	// 7: +this is a replacement long line...
+
+	// Simulated pager output (without wrapping - pager sends unwrapped lines)
+	pagerOutput := `───┐
+1: │
+───┘
+  1 ⋮  1 │short
+  2 ⋮    │this is a very long line that will need to be wrapped when displayed in a narrow view
+    ⋮  2 │this is a replacement long line that should also wrap in the view
+`
+
+	// Pager lines (unwrapped):
+	// 0: ───┐ (decoration)
+	// 1: 1: │ (decoration)
+	// 2: ───┘ (decoration)
+	// 3: short (content -> patch 5)
+	// 4: long deletion line (content -> patch 6)
+	// 5: long addition line (content -> patch 7)
+
+	state := newStateForPagerTest(diff)
+
+	// Use a narrow view that will cause wrapping
+	// With width 40, the long lines should wrap to multiple view lines
+	view := newTestViewWithWrap(40)
+	state.SetPagerOutput(pagerOutput, view)
+
+	// Verify wrapping occurred - patchLineIndices should have more entries than pager lines
+	// because wrapped lines create multiple view lines
+	pagerLineCount := 6 // 3 decoration + 3 content
+	assert.Greater(t, len(state.patchLineIndices), pagerLineCount,
+		"Wrapping should create more view lines than pager lines")
+
+	// Select the deletion line (patch line 6)
+	state.selectedLineIdx = state.viewLineIndices[6]
+	state.selectMode = LINE
+
+	// Verify we can still get the correct patch range for staging
+	lineIndices := state.LineIndicesOfAddedOrDeletedLinesInSelectedPatchRange()
+	assert.Equal(t, []int{6}, lineIndices, "Should stage the deletion line (patch 6)")
+
+	// The view line for patch 6 should be > 3 (after decoration)
+	viewLine := state.viewLineIndices[6]
+	assert.Greater(t, viewLine, 3, "Deletion should be after decoration lines")
+
+	// Verify patchLineIndices maps back correctly
+	assert.Equal(t, 6, state.patchLineIndices[viewLine],
+		"patchLineIndices should map view line back to patch line 6")
+}
+
+func TestPagerMapping_WrappingPreservesRangeSelection(t *testing.T) {
+	// Test that range selection works correctly when pager lines wrap
+	diff := `diff --git a/test.go b/test.go
+index abc123..def456 100644
+--- a/test.go
++++ b/test.go
+@@ -1,4 +1,4 @@
+ context
+-del1
+-del2
++add1
++add2
+`
+
+	// Patch lines:
+	// 0-4: headers
+	// 5: context
+	// 6: -del1
+	// 7: -del2
+	// 8: +add1
+	// 9: +add2
+
+	pagerOutput := `───┐
+1: │
+───┘
+  1 ⋮  1 │context
+  2 ⋮    │del1
+  3 ⋮    │del2
+    ⋮  2 │add1
+    ⋮  3 │add2
+`
+
+	state := newStateForPagerTest(diff)
+	view := newTestView() // No wrapping needed for this test - just verify mapping
+	state.SetPagerOutput(pagerOutput, view)
+
+	// Select range from del1 to add2 (patch lines 6-9)
+	state.rangeStartLineIdx = state.viewLineIndices[6]
+	state.selectedLineIdx = state.viewLineIndices[9]
+	state.selectMode = RANGE
+
+	// Verify the patch range is correct for staging
+	patchStart, patchEnd := state.SelectedPatchRange()
+	assert.Equal(t, 6, patchStart, "Patch range should start at line 6")
+	assert.Equal(t, 9, patchEnd, "Patch range should end at line 9")
+
+	// Verify we'd stage all change lines in the range
+	lineIndices := state.LineIndicesOfAddedOrDeletedLinesInSelectedPatchRange()
+	assert.Equal(t, []int{6, 7, 8, 9}, lineIndices, "Should stage all change lines in range")
 }

@@ -148,6 +148,6 @@ func (self *StagingHelper) mainStagingFocused() bool {
 // applyPagerOutput sets the pager output on a patch explorer context if available
 func (self *StagingHelper) applyPagerOutput(ctx *context.PatchExplorerContext, pagerOutput string) {
 	if state := ctx.GetState(); state != nil && pagerOutput != "" {
-		state.SetPagerOutput(pagerOutput)
+		state.SetPagerOutput(pagerOutput, ctx.GetView())
 	}
 }

@@ -3,6 +3,7 @@ package utils
 import (
 	"bytes"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/rivo/uniseg"
 )
@@ -109,6 +110,7 @@ func ScanLinesAndTruncateWhenLongerThanBuffer(maxBufferSize int) func(data []byt
 // - the line indices of the original lines, indexed by the wrapped line indices
 // If wrap is false, the text is returned as is.
 // This code needs to behave the same as `gocui.lineWrap` does.
+// It handles ANSI escape sequences by not counting them toward the display width.
 func WrapViewLinesToWidth(wrap bool, editable bool, text string, width int, tabWidth int) ([]string, []int, []int) {
 	if !editable {
 		text = strings.TrimSuffix(text, "\n")
@@ -133,57 +135,169 @@ func WrapViewLinesToWidth(wrap bool, editable bool, text string, width int, tabW
 	for originalLineIdx, line := range lines {
 		wrappedLineIndices = append(wrappedLineIndices, len(wrappedLines))
 
-		// convert tabs to spaces
-		for i := 0; i < len(line); i++ {
-			if line[i] == '\t' {
-				numSpaces := tabWidth - (i % tabWidth)
-				line = line[:i] + strings.Repeat(" ", numSpaces) + line[i+1:]
-				i += numSpaces - 1
-			}
-		}
+		// Parse the line into cells (visible characters with their positions)
+		cells := parseLineCells(line, tabWidth)
 
-		appendWrappedLine := func(str string) {
-			wrappedLines = append(wrappedLines, str)
+		appendWrappedLine := func(startIdx, endIdx int) {
+			// Build the wrapped line from cells
+			var sb strings.Builder
+			for i := startIdx; i < endIdx; i++ {
+				sb.WriteString(cells[i].text)
+			}
+			wrappedLines = append(wrappedLines, sb.String())
 			originalLineIndices = append(originalLineIndices, originalLineIdx)
 		}
 
+		// Wrap using the same algorithm as gocui.lineWrap but with cells
 		n := 0
 		offset := 0
 		lastWhitespaceIndex := -1
-		for i, currChr := range line {
-			rw := uniseg.StringWidth(string(currChr))
+
+		for i := 0; i < len(cells); i++ {
+			cell := cells[i]
+			if !cell.visible {
+				// ANSI sequences don't contribute to width
+				continue
+			}
+
+			rw := cell.width
 			n += rw
 
 			if n > width {
-				if currChr == ' ' {
-					appendWrappedLine(line[offset:i])
+				currChr := cell.chr
+				if currChr == " " {
+					// Break at space, omit the space
+					appendWrappedLine(offset, i)
 					offset = i + 1
 					n = 0
-				} else if currChr == '-' {
-					appendWrappedLine(line[offset:i])
+				} else if currChr == "-" {
+					// Break before hyphen
+					appendWrappedLine(offset, i)
 					offset = i
 					n = rw
 				} else if lastWhitespaceIndex != -1 {
-					if line[lastWhitespaceIndex] == '-' {
-						appendWrappedLine(line[offset : lastWhitespaceIndex+1])
+					// Break at last whitespace
+					if cells[lastWhitespaceIndex].chr == "-" {
+						// Keep the hyphen
+						appendWrappedLine(offset, lastWhitespaceIndex+1)
 					} else {
-						appendWrappedLine(line[offset:lastWhitespaceIndex])
+						// Omit the space
+						appendWrappedLine(offset, lastWhitespaceIndex)
 					}
 					offset = lastWhitespaceIndex + 1
-					n = uniseg.StringWidth(line[offset : i+1])
+					// Recalculate n from offset to current position (inclusive)
+					n = 0
+					for j := offset; j <= i; j++ {
+						if cells[j].visible {
+							n += cells[j].width
+						}
+					}
 				} else {
-					appendWrappedLine(line[offset:i])
+					// Break mid-word
+					appendWrappedLine(offset, i)
 					offset = i
 					n = rw
 				}
 				lastWhitespaceIndex = -1
-			} else if currChr == ' ' || currChr == '-' {
+			} else if cell.chr == " " || cell.chr == "-" {
 				lastWhitespaceIndex = i
 			}
 		}
 
-		appendWrappedLine(line[offset:])
+		// Append remaining content
+		appendWrappedLine(offset, len(cells))
 	}
 
 	return wrappedLines, wrappedLineIndices, originalLineIndices
+}
+
+// lineCell represents either a visible character or an ANSI escape sequence
+type lineCell struct {
+	text    string // the actual text (character or escape sequence)
+	chr     string // for visible cells, the character; empty for ANSI sequences
+	width   int    // display width (0 for ANSI sequences)
+	visible bool   // false for ANSI sequences
+}
+
+// parseLineCells splits a line into cells, where each cell is either
+// a visible character or an ANSI escape sequence.
+// Tabs are expanded to spaces.
+func parseLineCells(line string, tabWidth int) []lineCell {
+	var cells []lineCell
+	displayCol := 0 // track display column for tab expansion
+
+	i := 0
+	for i < len(line) {
+		if line[i] == '\x1b' && i+1 < len(line) && line[i+1] == '[' {
+			// Found start of CSI escape sequence
+			j := i + 2 // skip ESC [
+			for j < len(line) && ((line[j] >= '0' && line[j] <= '9') || line[j] == ';') {
+				j++
+			}
+			if j < len(line) {
+				j++ // include the terminating character (e.g., 'm', 'K')
+			}
+
+			cells = append(cells, lineCell{
+				text:    line[i:j],
+				visible: false,
+				width:   0,
+			})
+			i = j
+		} else if line[i] == '\x1b' && i+1 < len(line) && line[i+1] == ']' {
+			// Found start of OSC escape sequence (e.g., hyperlinks)
+			j := i + 2
+			for j < len(line) {
+				if line[j] == 0x07 {
+					j++
+					break
+				}
+				if line[j] == '\x1b' && j+1 < len(line) && line[j+1] == '\\' {
+					j += 2
+					break
+				}
+				j++
+			}
+
+			cells = append(cells, lineCell{
+				text:    line[i:j],
+				visible: false,
+				width:   0,
+			})
+			i = j
+		} else if line[i] == '\t' {
+			// Expand tab to spaces
+			numSpaces := tabWidth - (displayCol % tabWidth)
+			for s := 0; s < numSpaces; s++ {
+				cells = append(cells, lineCell{
+					text:    " ",
+					chr:     " ",
+					width:   1,
+					visible: true,
+				})
+			}
+			displayCol += numSpaces
+			i++
+		} else {
+			// Regular character - need to handle multi-byte UTF-8
+			// Use range to get proper rune boundaries
+			r, size := rune(line[i]), 1
+			for j := i; j < len(line); {
+				r, size = utf8.DecodeRuneInString(line[j:])
+				break
+			}
+			chr := string(r)
+			w := uniseg.StringWidth(chr)
+			cells = append(cells, lineCell{
+				text:    line[i : i+size],
+				chr:     chr,
+				width:   w,
+				visible: true,
+			})
+			displayCol += w
+			i += size
+		}
+	}
+
+	return cells
 }
