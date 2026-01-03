@@ -1,8 +1,6 @@
 package patch_exploring
 
 import (
-	"fmt"
-	"os"
 	"strings"
 
 	"github.com/jesseduffield/generics/set"
@@ -426,15 +424,6 @@ func (s *State) SetPagerOutput(pagerOutput string, view *gocui.View, isDelta boo
 	patchLineCount := len(patchLines)
 	pagerLineCount := len(pagerLines)
 
-	// DEBUG: Log the mapping setup
-	debugFile, _ := os.OpenFile("/tmp/pager_mapping_debug.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if debugFile != nil {
-		fmt.Fprintf(debugFile, "\n=== SetPagerOutput called ===\n")
-		fmt.Fprintf(debugFile, "patchLineCount=%d pagerLineCount=%d wrap=%v width=%d\n",
-			patchLineCount, pagerLineCount, view.Wrap, view.InnerWidth())
-		defer debugFile.Close()
-	}
-
 	// Step 1: Build patch↔pager mapping
 	// patchToPagerIdx[patchIdx] = corresponding pagerLineIdx
 	patchToPagerIdx := make([]int, patchLineCount)
@@ -479,10 +468,6 @@ func (s *State) SetPagerOutput(pagerOutput string, view *gocui.View, isDelta boo
 					firstContentPagerLine = pagerIdx
 				}
 
-				if debugFile != nil && patchIdx < 30 {
-					fmt.Fprintf(debugFile, "MATCH: patch[%d] %q -> pager[%d]\n",
-						patchIdx, truncate(patchContent, 40), pagerIdx)
-				}
 				found = true
 				break
 			}
@@ -492,9 +477,6 @@ func (s *State) SetPagerOutput(pagerOutput string, view *gocui.View, isDelta boo
 			// No match found - map to the last matched pager line or 0
 			if lastMatchedPagerIdx > 0 {
 				patchToPagerIdx[patchIdx] = lastMatchedPagerIdx - 1
-			}
-			if debugFile != nil && patchIdx < 30 {
-				fmt.Fprintf(debugFile, "NO MATCH: patch[%d] %q\n", patchIdx, truncate(patchContent, 40))
 			}
 		}
 	}
@@ -541,10 +523,6 @@ func (s *State) SetPagerOutput(pagerOutput string, view *gocui.View, isDelta boo
 		view.Wrap, view.Editable, strings.TrimSuffix(pagerOutput, "\n"), view.InnerWidth(), view.TabWidth)
 
 	wrappedLineCount := len(wrappedPagerLines)
-
-	if debugFile != nil {
-		fmt.Fprintf(debugFile, "After wrapping: wrappedLineCount=%d\n", wrappedLineCount)
-	}
 
 	// Step 3: Compose mappings to create direct view↔patch mappings
 	// Save old selection in patch coordinates
@@ -594,18 +572,6 @@ func (s *State) SetPagerOutput(pagerOutput string, view *gocui.View, isDelta boo
 	}
 	if oldRangeStartPatchLine < len(s.viewLineIndices) {
 		s.rangeStartLineIdx = s.viewLineIndices[oldRangeStartPatchLine]
-	}
-
-	if debugFile != nil {
-		fmt.Fprintf(debugFile, "Final: selectedLineIdx=%d rangeStartLineIdx=%d\n",
-			s.selectedLineIdx, s.rangeStartLineIdx)
-		// Log first few mappings
-		for i := 0; i < min(10, patchLineCount); i++ {
-			fmt.Fprintf(debugFile, "  viewLineIndices[%d]=%d\n", i, s.viewLineIndices[i])
-		}
-		for i := 0; i < min(10, wrappedLineCount); i++ {
-			fmt.Fprintf(debugFile, "  patchLineIndices[%d]=%d\n", i, s.patchLineIndices[i])
-		}
 	}
 }
 
@@ -681,14 +647,6 @@ func contentMatches(patchContent, pagerContent string) bool {
 func normalizeForMatch(s string) string {
 	// Trim leading/trailing whitespace but preserve internal structure
 	return strings.TrimSpace(s)
-}
-
-// truncate shortens a string for debug output
-func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "..."
 }
 
 // isDecorationLine checks if a pager line is a decoration (hunk header, separator, etc.)
