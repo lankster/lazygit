@@ -2,6 +2,7 @@ package config
 
 import (
 	"strconv"
+	"strings"
 
 	"github.com/jesseduffield/lazygit/pkg/utils"
 )
@@ -88,4 +89,17 @@ func (self *PagerConfig) CyclePagers() {
 
 func (self *PagerConfig) CurrentPagerIndex() (int, int) {
 	return self.pagerIndex, len(self.getUserConfig().Git.Pagers)
+}
+
+// IsDeltaPager returns true if the current pager command appears to be delta.
+// This is used to enable delta-specific features like decoration line detection.
+func (self *PagerConfig) IsDeltaPager() bool {
+	currentPagerConfig := self.currentPagerConfig()
+	if currentPagerConfig == nil {
+		return false
+	}
+	pagerCmd := strings.ToLower(string(currentPagerConfig.Pager))
+	// Check for "delta" as a word (not just substring) to avoid false positives
+	// Common patterns: "delta", "delta --dark", "/path/to/delta"
+	return strings.Contains(pagerCmd, "delta")
 }

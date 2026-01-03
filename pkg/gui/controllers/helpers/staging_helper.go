@@ -60,6 +60,7 @@ func (self *StagingHelper) RefreshStagingPanel(focusOpts types.OnFocusOpts) {
 	// Check if pager is enabled for staging view
 	pagerConfig := self.c.State().GetPagerConfig()
 	usePager := pagerConfig.StagingPagerEnabled()
+	isDelta := pagerConfig.IsDeltaPager()
 
 	var mainPagerOutput, secondaryPagerOutput string
 	if usePager {
@@ -82,13 +83,13 @@ func (self *StagingHelper) RefreshStagingPanel(focusOpts types.OnFocusOpts) {
 		patch_exploring.NewState(mainDiff, mainSelectedLineIdx, mainContext.GetView(), mainContext.GetState(), hunkMode),
 	)
 	// Set pager output if available
-	self.applyPagerOutput(mainContext, mainPagerOutput)
+	self.applyPagerOutput(mainContext, mainPagerOutput, isDelta)
 
 	secondaryContext.SetState(
 		patch_exploring.NewState(secondaryDiff, secondarySelectedLineIdx, secondaryContext.GetView(), secondaryContext.GetState(), hunkMode),
 	)
 	// Set pager output if available
-	self.applyPagerOutput(secondaryContext, secondaryPagerOutput)
+	self.applyPagerOutput(secondaryContext, secondaryPagerOutput, isDelta)
 
 	mainState := mainContext.GetState()
 	secondaryState := secondaryContext.GetState()
@@ -146,8 +147,8 @@ func (self *StagingHelper) mainStagingFocused() bool {
 }
 
 // applyPagerOutput sets the pager output on a patch explorer context if available
-func (self *StagingHelper) applyPagerOutput(ctx *context.PatchExplorerContext, pagerOutput string) {
+func (self *StagingHelper) applyPagerOutput(ctx *context.PatchExplorerContext, pagerOutput string, isDelta bool) {
 	if state := ctx.GetState(); state != nil && pagerOutput != "" {
-		state.SetPagerOutput(pagerOutput, ctx.GetView())
+		state.SetPagerOutput(pagerOutput, ctx.GetView(), isDelta)
 	}
 }

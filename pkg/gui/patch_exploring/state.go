@@ -404,12 +404,16 @@ func (s *State) RenderForLineIndices(includedLineIndices []int) string {
 // This builds a line mapping between pager output and the original diff,
 // and handles wrapping of the pager output to produce direct view↔patch mappings.
 //
+// The isDelta parameter indicates whether the pager is delta, which enables
+// delta-specific features like box-drawing decoration detection. For other pagers,
+// a simpler content-matching approach is used.
+//
 // The approach:
 // 1. Build patch↔pager mapping by content matching
 // 2. Wrap the pager output using the view's wrap settings
 // 3. Compose into direct viewLineIndices/patchLineIndices mappings
 // 4. Decoration lines (pager lines with no patch equivalent) map to nearest patch line
-func (s *State) SetPagerOutput(pagerOutput string, view *gocui.View) {
+func (s *State) SetPagerOutput(pagerOutput string, view *gocui.View, isDelta bool) {
 	if pagerOutput == "" {
 		s.pagerOutput = ""
 		s.pagerViewLineIndices = nil
@@ -438,9 +442,14 @@ func (s *State) SetPagerOutput(pagerOutput string, view *gocui.View) {
 	pagerToPatchIdx := make([]int, pagerLineCount)
 
 	// Strip ANSI codes from all pager lines for matching
+	// For delta, also strip box-drawing decorations; for other pagers, just strip ANSI
 	strippedPagerLines := make([]string, pagerLineCount)
 	for i, line := range pagerLines {
-		strippedPagerLines[i] = stripAnsiCodes(line)
+		if isDelta {
+			strippedPagerLines[i] = stripAnsiCodesAndDeltaDecorations(line)
+		} else {
+			strippedPagerLines[i] = stripAnsiOnly(line)
+		}
 	}
 
 	// For each patch content line, find its corresponding pager line by content matching
@@ -600,8 +609,9 @@ func (s *State) SetPagerOutput(pagerOutput string, view *gocui.View) {
 	}
 }
 
-// stripAnsiCodes removes ANSI escape sequences and pager decorations from a string
-func stripAnsiCodes(s string) string {
+// stripAnsiCodesAndDeltaDecorations removes ANSI escape sequences and delta's
+// box-drawing decorations from a string. Used for content matching with delta pager.
+func stripAnsiCodesAndDeltaDecorations(s string) string {
 	// First strip ANSI escape sequences: ESC[ followed by parameters and a letter
 	// Use runes to preserve UTF-8 characters
 	var result strings.Builder
@@ -775,8 +785,9 @@ func stripAnsiOnly(s string) string {
 // isEmptyDecorationLine checks if a pager line is a delta file/hunk header
 // (e.g., "66: func..." context lines) that have no actual diff content.
 // These are different from empty content lines which have ⋮ between line numbers.
+// Note: This function is delta-specific.
 func isEmptyDecorationLine(pagerLine string) bool {
-	stripped := stripAnsiCodes(pagerLine)
+	stripped := stripAnsiCodesAndDeltaDecorations(pagerLine)
 	if strings.TrimSpace(stripped) != "" {
 		return false // Has content after stripping, not empty
 	}

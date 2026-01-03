@@ -65,7 +65,7 @@ func newStateForPagerTest(diff string) *State {
 // Tests for helper functions
 // =============================================================================
 
-func TestStripAnsiCodes(t *testing.T) {
+func TestStripAnsiCodesAndDeltaDecorations(t *testing.T) {
 	tests := []struct {
 		name     string
 		input    string
@@ -100,7 +100,7 @@ func TestStripAnsiCodes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := stripAnsiCodes(tt.input)
+			result := stripAnsiCodesAndDeltaDecorations(tt.input)
 			assert.Equal(t, tt.expected, result)
 		})
 	}
@@ -287,7 +287,7 @@ index abc123..def456 100644
 `
 
 	state := newStateForPagerTest(diff)
-	state.SetPagerOutput(pagerOutput, newTestView())
+	state.SetPagerOutput(pagerOutput, newTestView(), true)
 
 	// Verify pager output is set
 	assert.True(t, state.HasPagerOutput())
@@ -373,7 +373,7 @@ index abc123..def456 100644
 `
 
 	state := newStateForPagerTest(diff)
-	state.SetPagerOutput(pagerOutput, newTestView())
+	state.SetPagerOutput(pagerOutput, newTestView(), true)
 
 	assert.True(t, state.HasPagerOutput())
 	assert.NotNil(t, state.pagerViewLineIndices)
@@ -393,7 +393,7 @@ index abc123..def456 100644
 	state := newStateForPagerTest(diff)
 
 	// Set empty pager output
-	state.SetPagerOutput("", newTestView())
+	state.SetPagerOutput("", newTestView(), true)
 
 	assert.False(t, state.HasPagerOutput())
 	assert.Nil(t, state.pagerViewLineIndices)
@@ -451,7 +451,7 @@ index abc123..def456 100644
 	// 7: context3 (content -> patch 9)
 
 	state := newStateForPagerTest(diff)
-	state.SetPagerOutput(pagerOutput, newTestView())
+	state.SetPagerOutput(pagerOutput, newTestView(), true)
 
 	// Select the deletion line (patch line 7)
 	// With Option B, selectedLineIdx is a VIEW line index, not patch line
@@ -515,7 +515,7 @@ index abc123..def456 100644
 	// 9: context2 (patch 11)
 
 	state := newStateForPagerTest(diff)
-	state.SetPagerOutput(pagerOutput, newTestView())
+	state.SetPagerOutput(pagerOutput, newTestView(), true)
 
 	// Select range from deleted1 to added2 (patch lines 6-9)
 	// With Option B, indices are VIEW line indices
@@ -621,7 +621,7 @@ index abc123..def456 100644
 	// 10: func goodbye() { (content - patch 12)
 
 	state := newStateForPagerTest(diff)
-	state.SetPagerOutput(pagerOutput, newTestView())
+	state.SetPagerOutput(pagerOutput, newTestView(), true)
 
 	// Simulate selecting the deletion line (patch line 8)
 	// With Option B, selectedLineIdx is a VIEW line index
@@ -764,7 +764,7 @@ index ab54e8b..d925f57 100644
 	// 14:   9 ⋮ 10 │} (content -> patch 16)
 
 	state := newStateForPagerTest(diff)
-	state.SetPagerOutput(pagerOutput, newTestView())
+	state.SetPagerOutput(pagerOutput, newTestView(), true)
 
 	// Test mapping for first deletion (patch line 8)
 	// With Option B, selectedLineIdx is a VIEW line index
@@ -853,7 +853,7 @@ index 1234567..abcdefg 100644
 	// 7: line4 (patch 9)
 
 	state := newStateForPagerTest(diff)
-	state.SetPagerOutput(pagerOutput, newTestView())
+	state.SetPagerOutput(pagerOutput, newTestView(), true)
 
 	// Scenario: User navigates to and selects the deletion line (patch line 7)
 	// With Option B, selectedLineIdx is a VIEW line index
@@ -924,7 +924,7 @@ index abc..def 100644
 `
 
 	state := newStateForPagerTest(diff)
-	state.SetPagerOutput(pagerOutput, newTestView())
+	state.SetPagerOutput(pagerOutput, newTestView(), true)
 
 	// Select a change line and enable hunk mode
 	// Patch lines: 6=-del1, 7=-del2, 8=+add1, 9=+add2, 10=+add3
@@ -986,7 +986,7 @@ index abc123..def456 100644
 	// Use a narrow view that will cause wrapping
 	// With width 40, the long lines should wrap to multiple view lines
 	view := newTestViewWithWrap(40)
-	state.SetPagerOutput(pagerOutput, view)
+	state.SetPagerOutput(pagerOutput, view, true)
 
 	// Verify wrapping occurred - patchLineIndices should have more entries than pager lines
 	// because wrapped lines create multiple view lines
@@ -1045,7 +1045,7 @@ index abc123..def456 100644
 
 	state := newStateForPagerTest(diff)
 	view := newTestView() // No wrapping needed for this test - just verify mapping
-	state.SetPagerOutput(pagerOutput, view)
+	state.SetPagerOutput(pagerOutput, view, true)
 
 	// Select range from del1 to add2 (patch lines 6-9)
 	state.rangeStartLineIdx = state.viewLineIndices[6]
